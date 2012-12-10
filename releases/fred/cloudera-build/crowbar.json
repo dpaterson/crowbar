@@ -23,7 +23,8 @@
         "crowbar": { "password": "crowbar" }
       },
       "bios-settings": {
-         "Hadoop": "Hadoop"
+         "Hadoop": "Hadoop",
+         "Hadoop Infrastructure": "HadoopInfra"
       },
       "raid-settings": {
          "JBOD Only" : "JBODOnly",

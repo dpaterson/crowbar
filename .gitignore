@@ -11,5 +11,9 @@ sha1sums
 .#*
 /extra
 /change-image
+/.ci-tracking
+/.releases
 /barclamps/*/
 *.swp
+.chef/webui.pem
+.chef/knife.rb
