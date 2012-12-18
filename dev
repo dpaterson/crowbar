@@ -46,10 +46,12 @@ VERBOSE=true
 [[ $CROWBAR_DIR = /* ]] || CROWBAR_DIR="$currdir/$CROWBAR_DIR"
 [[ -f $CROWBAR_DIR/build_crowbar.sh && -d $CROWBAR_DIR/.git ]] || \
     die "$CROWBAR_DIR is not a git checkout of Crowbar!"
-export CROWBAR_DIR
-[[ $CROWBAR_TEST_DIR ]] || export CROWBAR_TEST_DIR="/tmp/crowbar-dev-test"
-[[ $LOCAL_PULL_TRACKING ]] || LOCAL_PULL_TRACKING="$HOME/.crowbar/open_pull_requests"
-
+[[ $CROWBAR_TEST_DIR ]] || CROWBAR_TEST_DIR="/tmp/crowbar-dev-test"
+[[ $LOCAL_PULL_TRACKING ]] || LOCAL_PULL_TRACKING="$HOME/.crowbar"
+[[ $OPEN_PULL_REQUESTS ]] || OPEN_PULL_REQUESTS="$LOCAL_PULL_TRACKING/open_pull_requests"
+[[ $OLD_PULL_REQUESTS ]] || OLD_PULL_REQUESTS="$LOCAL_PULL_TRACKING/old_pull_requests"
+export CROWBAR_DIR CROWBAR_TEST_DIR LOCAL_PULL_TRACKING
+export OPEN_PULL_REQUESTS OLD_PULL_REQUESTS
 
 . "$CROWBAR_DIR/build_lib.sh" || exit 1
 trap - 0 INT QUIT TERM
@@ -562,7 +564,7 @@ source_prq_vars() (
     # $2 = whether to scope the variables as local
     local f  val
     cd "$1" || return 1
-    [[ -f repo && -f created_at && -f title ]] || return 1
+    [[ -f source_repo && -f created_at && -f title ]] || return 1
     for f in *; do
         [[ -f $f ]] || continue
         read val < "$f"
@@ -626,9 +628,9 @@ save_pull_request_metadata() (
         $created_at  && \
         $github_target_user ]] || return
     if [[ $pull_req_id ]]; then
-        local dest="$LOCAL_PULL_TRACKING/bundles/$pull_req_id/$repo"
+        local dest="$OPEN_PULL_REQUESTS/bundles/$pull_req_id/$repo"
     else
-        local dest="$LOCAL_PULL_TRACKING/singletons/$github_target_user/$repo/$github_id"
+        local dest="$OPEN_PULL_REQUESTS/singletons/$github_target_user/$repo/$github_id"
         [[ $order ]] || order='1:1'
     fi
     case $repo in
@@ -640,11 +642,12 @@ save_pull_request_metadata() (
     $fetchcmd "$pull_req_repo" "+$pull_req_branch:$local_branch" &>/dev/null || return
     mkdir -p "$dest" && cd "$dest"
     echo "$order" > order
-    echo "$pull_req_repo" > repo
+    echo "$pull_req_repo" > source_repo
     echo "$repo" > local_repo
     echo "$pull_req_target_repo" > target_repo
     echo "$pull_req_branch" > source_branch
     echo "$pull_req_sha" > source_sha
+    echo "$pull_req_target_sha" > target_sha
     echo "$base_branch" > target_branch
     echo "$github_id" > number
     echo "$created_at" > created_at
@@ -671,7 +674,7 @@ clear_pull_request_metadata() (
             git branch -D ${ref#refs/heads/} &>/dev/null
         done < <(git show-ref --heads)
     done
-    [[ -d $LOCAL_PULL_TRACKING ]] && rm -rf "$LOCAL_PULL_TRACKING"
+    [[ -d $OPEN_PULL_REQUESTS ]] && rm -rf "$OPEN_PULL_REQUESTS"
 )
 
 # Fetch pull request metadata from Github.
@@ -691,18 +694,18 @@ fetch_pull_request_metadata() {
             curl_and_res "https://api.github.com/repos/$acct/$2/pulls"))
     local pull_req_id pull_req_sha order pull_req_repo pull_req_branch created_at
     local base_branch key ord repo title rel github_id updated_at github_url github_user
-    local github_target_user pull_req_target_repo
+    local github_target_user pull_req_target_repo pull_req_target_sha
     for key in $(printf '%s\n' "${!pulls[@]}" |sort); do
         if [[ $ord && $ord != ${key%%.*} ]]; then
             # The first part of the key has changed, so we should have a complete set of data.
             save_pull_request_metadata
             unset pull_req_id pull_req_sha order pull_req_repo pull_req_branch created_at
             unset base_branch key ord repo title rel github_id updated_at github_url github_user
-            unset github_target_user pull_req_target_repo
+            unset github_target_user pull_req_target_repo pull_req_target_sha
 
             local pull_req_id pull_req_sha order pull_req_repo pull_req_branch created_at
             local base_branch key ord repo title rel github_id updated_at github_url github_user
-            local github_target_user pull_req_target_repo
+            local github_target_user pull_req_target_repo pull_req_target_sha
 
         fi
         ord=${key%%.*}
@@ -720,6 +723,7 @@ fetch_pull_request_metadata() {
             head.sha) pull_req_sha="${pulls[$key]}";;
             head.repo.clone_url) pull_req_repo="${pulls[$key]}";;
             base.repo.clone_url) pull_req_target_repo="${pulls[$key]}";;
+            base.sha) pull_req_target_sha="${pulls[$key]}";;
             title)
                 if [[ ${pulls[$key]} =~ $PULL_TITLE_RE ]]; then
                     order="${BASH_REMATCH[2]}:${BASH_REMATCH[3]}"
@@ -778,10 +782,10 @@ pull_request_bundle_sane() {
     local -a order
     local total_count=0 indicated_count=0 d f r repo o c release branch
     local branch_for_release build bc source_account su tu
-    for d in "$LOCAL_PULL_TRACKING/bundles/$1/"*; do
+    for d in "$OPEN_PULL_REQUESTS/bundles/$1/"*; do
         [[ -d "$d" ]] || continue
         repo="${d##*/}"
-        for f in order repo source_branch source_sha source_account \
+        for f in order source_repo source_branch source_sha source_account \
             target_branch number created_at title release; do
             [[ -f $d/$f ]] && continue
             debug "Missing metadata info $d/$f"
@@ -842,12 +846,12 @@ pull_request_bundle_sane() {
 show_open_pull_requests() {
    local -a open_bundles open_singletons
    local d r
-   for d in "$LOCAL_PULL_TRACKING/bundles/"*; do
+   for d in "$OPEN_PULL_REQUESTS/bundles/"*; do
        [[ -d $d ]] || continue
        pull_request_bundle_sane "${d##*/}" || continue
        open_bundles+=("$d")
    done
-   for d in "$LOCAL_PULL_TRACKING/singletons/"*/*/*; do
+   for d in "$OPEN_PULL_REQUESTS/singletons/"*/*/*; do
        [[ -d $d ]] || continue
        open_singletons+=("$d")
    done
@@ -869,7 +873,7 @@ pull_request_last_touched() (
     # Returns the most recent date that any of the bundle components were touched.
     local mtime
     if [[ $1 = bundles/* ]]; then
-        cd "$LOCAL_PULL_TRACKING/$1" || die "Bundle $1 does not exist!"
+        cd "$OPEN_PULL_REQUESTS/$1" || die "Bundle $1 does not exist!"
         for d in *; do
             [[ -d $d ]] || continue
             [[ $ltime ]] || read ltime <"$d/created_at"
@@ -878,10 +882,10 @@ pull_request_last_touched() (
         done
         echo $mtime
     elif [[ $1 = singletons/* ]]; then
-        if [[ -f $LOCAL_PULL_TRACKING/$1/updated_at ]]; then
-            cat "$LOCAL_PULL_TRACKING/$1/updated_at"
+        if [[ -f $OPEN_PULL_REQUESTS/$1/updated_at ]]; then
+            cat "$OPEN_PULL_REQUESTS/$1/updated_at"
         else
-            cat "$LOCAL_PULL_TRACKING/$1/created_at"
+            cat "$OPEN_PULL_REQUESTS/$1/created_at"
         fi
     else
         die "No idea how to find lat touched time for $1"
@@ -890,8 +894,8 @@ pull_request_last_touched() (
 
 # Helper for finding out all the pull request metadata we have.
 pull_request_directories() (
-    [[ -d $LOCAL_PULL_TRACKING ]] || return 0
-    cd "$LOCAL_PULL_TRACKING"
+    [[ -d $OPEN_PULL_REQUESTS ]] || return 0
+    cd "$OPEN_PULL_REQUESTS"
     for d in bundles/* singletons/*/*/*; do
         if [[ $d = bundles/* ]]; then
             pull_request_bundle_sane "${d##*/}" || continue
@@ -904,9 +908,9 @@ pull_request_directories() (
 # Sort pull requests according to their last modification time.
 sort_pull_requests() {
     local count=1 p
-    rm "$LOCAL_PULL_TRACKING/pull_request_index" &>/dev/null
+    rm "$OPEN_PULL_REQUESTS/pull_request_index" &>/dev/null
     for p in $(pull_request_directories); do
-        echo "$count $p" >>"$LOCAL_PULL_TRACKING/pull_request_index"
+        echo "$count $p" >>"$OPEN_PULL_REQUESTS/pull_request_index"
         count=$((count + 1))
     done
 }
@@ -915,7 +919,7 @@ sort_pull_requests() {
 # into an internal ID.
 pull_request_number_to_id() {
     [[ $1 && $1 =~ [0-9]+ ]] || die "Please pass a pull request # from dev pull-request list!"
-    read idx id < <(grep "^$1 " "$LOCAL_PULL_TRACKING/pull_request_index")
+    read idx id < <(grep "^$1 " "$OPEN_PULL_REQUESTS/pull_request_index")
     [[ $1 = $idx ]] || die "$1 is not a valid pull request." \
         "dev pull-requests list shows the open ones we know about."
     echo $id
@@ -942,7 +946,7 @@ builds_for_pull_request() {
     local -A oses build_tmp PULL_REQUEST_BARCLAMPS barclamp_oses build_oses _t _r
     idx=$1
     id=$(pull_request_number_to_id "$idx") || exit 1
-    prq="$LOCAL_PULL_TRACKING/$id"
+    prq="$OPEN_PULL_REQUESTS/$id"
     read release <"$prq/release"
     case $id in
         singletons/*)
@@ -956,7 +960,7 @@ builds_for_pull_request() {
         bundles/*)
             for repo in "$prq"/*; do
                 [[ -d $repo ]] || continue
-                . <(source_prq_vars "$prq" "local")
+                . <(source_prq_vars "$repo" "local")
                 [[ $prq_local_repo = barclamp-* ]] && \
                     PULL_REQUEST_BARCLAMPS[${prq_local_repo#barclamp-}]="$prq_local_branch"
                 for b in $(builds_for_one_pull_request "$repo"); do
@@ -1023,7 +1027,7 @@ show_pull_request() {
     local -a builds
     idx=$1
     id=$(pull_request_number_to_id $idx) || exit 1
-    prq="$LOCAL_PULL_TRACKING/$id"
+    prq="$OPEN_PULL_REQUESTS/$id"
     [[ -f $prq/title ]] || die "Something Wicked happened trying to show $idx." \
         "Please re-run dev pull-request fetch"
     if [[ $id = singletons/* ]]; then
@@ -1040,7 +1044,7 @@ show_pull_request() {
         echo "Last Updated:        $(pull_request_last_touched "$id")"
         echo "Type:                singleton"
         echo "Repo:                $prq_local_repo"
-        echo "Repo with Changes:   $prq_repo"
+        echo "Repo with Changes:   $prq_source_repo"
         echo "Branch with Changes: $prq_source_branch"
         echo "Local Branch:        $prq_local_branch"
         echo "Target Branch:       $prq_target_branch"
@@ -1055,14 +1059,14 @@ show_pull_request() {
         local repo
         for repo in "$prq/"*; do
             [[ -d $repo ]] || continue
-            if [[ $repo = */barclamp-* ]]; then
-                builds=($(builds_for_barclamp_in_release "${repo#*/barclamp-}" "$release"))
-            else
-                builds=("all")
-            fi
             . <(source_prq_vars "$repo" "local")
+            if [[ $repo = */barclamp-* ]]; then
+                builds=($(builds_for_barclamp_in_release "${repo#*/barclamp-}" "$prq_release"))
+            else
+                builds=($(builds_in_release "$prq_release"))
+            fi
             echo "Repo: ${repo##*/}"
-            echo "    Repo with Changes:   $prq_repo"
+            echo "    Repo with Changes:   $prq_source_repo"
             echo "    Target Account:      $prq_target_account"
             echo "    Source Account:      $prq_source_account"
             echo "    Branch with Changes: $prq_source_branch"
@@ -1080,12 +1084,12 @@ show_pull_request() {
 list_pull_requests() {
     local idx id
     while read idx id; do
-        [[ -d $LOCAL_PULL_TRACKING/$id ]] || continue
-        cf="$LOCAL_PULL_TRACKING/$id/title"
-        cr="$LOCAL_PULL_TRACKING/$id/release"
+        [[ -d $OPEN_PULL_REQUESTS/$id ]] || continue
+        cf="$OPEN_PULL_REQUESTS/$id/title"
+        cr="$OPEN_PULL_REQUESTS/$id/release"
         ct="${id%%/*}"
         echo "$idx: ($(cat "$cr")) $(cat "$cf")"
-    done <"$LOCAL_PULL_TRACKING/pull_request_index"
+    done <"$OPEN_PULL_REQUESTS/pull_request_index"
 }
 
 # Switch to a specific build in a pull request.
@@ -1116,8 +1120,8 @@ pull_request_switch() {
     else
         build=$2
     fi
-    prq="$LOCAL_PULL_TRACKING/$id"
-    switch_release "$(cat "$prq/release")/$build"
+    prq="$OPEN_PULL_REQUESTS/$id"
+    switch_release "$build"
     case $id in
         singletons/*) repo_dirs=("$prq");;
         bundles/*) repo_dirs=("$prq/"*);;
@@ -1170,10 +1174,10 @@ pull_request_merge() {
         die "$1 is not a pull request number!"
     case $id in
         singletons/*)
-            pull_request_merge_one "$LOCAL_PULL_TRACKING/$id"
+            pull_request_merge_one "$OPEN_PULL_REQUESTS/$id"
             res=$?;;
         bundles/*)
-            for repo in "$LOCAL_PULL_TRACKING/$id/"*; do
+            for repo in "$OPEN_PULL_REQUESTS/$id/"*; do
                 [[ -d $repo ]] || continue
                 if ((res == 0)); then
                     pull_request_merge_one "$repo" && continue
@@ -1210,9 +1214,9 @@ pull_request_comment() {
     id=$(pull_request_number_to_id "$1") || exit 1
     case $id in
         singletons/*)
-            pull_request_comment_one "$LOCAL_PULL_TRACKING/$id" "$2";;
+            pull_request_comment_one "$OPEN_PULL_REQUESTS/$id" "$2";;
         bundles/*)
-            for repo in "$LOCAL_PULL_TRACKING/$id/"*; do
+            for repo in "$OPEN_PULL_REQUESTS/$id/"*; do
                 [[ -d $repo ]] || continue
                 pull_request_comment_one "$repo" "$2"
             done;;
@@ -1235,9 +1239,9 @@ pull_request_close() {
     local id repo
     id=$(pull_request_number_to_id "$1") || exit 1
     case $id in
-        singletons/*) pull_request_close_one "$LOCAL_PULL_TRACKING/$id" "$2";;
+        singletons/*) pull_request_close_one "$OPEN_PULL_REQUESTS/$id" "$2";;
         bundles/*)
-            for repo in "$LOCAL_PULL_TRACKING/$id/"*; do
+            for repo in "$OPEN_PULL_REQUESTS/$id/"*; do
                 [[ -d $repo ]] || continue
                 pull_request_close_one "$repo" "$2"
             done;;
@@ -1245,7 +1249,7 @@ pull_request_close() {
 }
 
 __fetch_all() {
-    local remote remotes=() res=true
+    local remote remotes=() res=true 
     if [[ $@ || $DEV_FROM_REMOTES ]]; then
 	[[ $1 ]] && remotes+=("$@")
 	[[ $DEV_FROM_REMOTES ]] && remotes+=("${DEV_FROM_REMOTES[@]}")
@@ -1287,12 +1291,17 @@ __fetch_all() {
 fetch_all() {
     local results_dir d
     clear_pull_request_metadata
-    results_dir="$(mktemp -d /tmp/crowbar_fetch_XXXXXX)" || \
+    dt=$(date +%s)
+    results_dir="$(mktemp -d /tmp/crowbar_fetch_${USER}_${dt}_XXXXXX)" || \
         die "Cannot create temporary storage for fetch results!"
     debug "Fetching updates:"
     for d in "$CROWBAR_DIR/barclamps/"* "$CROWBAR_DIR"; do
         [[ -d $d/.git ]] || continue
-        ( cd "$d" && __fetch_all "$@") &
+        if [[ $BADLINK  ]]; then
+          cd "$d" && __fetch_all "$@"
+        else
+          ( cd "$d" && __fetch_all "$@") &
+        fi
     done
     wait
     echo
@@ -1306,7 +1315,11 @@ fetch_all() {
             cat "$d"
         fi
     done
-    rm -rf "$results_dir"
+    if [[ $BADLINK ]]; then
+      debug "not removing $results_dir"
+    else
+      rm -rf "$results_dir"
+    fi
     update_all_tracking_branches
     show_open_pull_requests
     sort_pull_requests
@@ -2389,6 +2402,8 @@ pull_requests_gen() {
             for br in "${!br_pulls[@]}"; do
                 in_repo git show-ref --hash "refs/heads/$br"
             done
+            hostname -f
+            date -u '+%s.%N'
         )|sha1sum |cut -d ' ' -f 1)"
     for bc in "${!barclamps[@]}"; do
 	for bcb in ${barclamp_branches["$bc"]}; do
@@ -2958,7 +2973,7 @@ purge_submodule_metadata() (
 unit_prereqs_installed() {
     local f gem
     f=true
-    if ! [[ -f /usr/bin/markdown ]]; then
+    if ! command -v markdown >/dev/null 2>&1; then
         debug "Please make sure markdown is installed."
         f=false
     fi
@@ -3430,7 +3445,12 @@ DEV_LONG_HELP["fetch"]="Fetch changes from remote repositories.
   working trees. You can run a fetch at any time without disturbing
   your working code, provided you have network connectivity.  If you
   pass the names of remotes, or specify remotes using the --from flag,
-  fetch will try to fetch changes from just those remotes"
+  fetch will try to fetch changes from just those remotes.
+  
+  If you are experiencing lots of !!!! in your fetches, then export
+  BADLINK=true and dev will run fetch serially, not in parallel.  
+  Also, the temporary files will not be removed, so you can report
+  on the failures later."
 DEV_LONG_HELP["remote"]="Manage remotes across all repositories.
   Subcommands:
     add <remote> <urlbase> : The add subcommand adds a new remote to
