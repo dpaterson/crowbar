@@ -27,27 +27,14 @@ GEM_RE='([^0-9].*)-([0-9].*)'
 readonly currdir="$PWD"
 export PATH="$PATH:/sbin:/usr/sbin:/usr/local/sbin"
 
-if ! which cpio &>/dev/null; then
-    die "Cannot find cpio, we cannot proceed."
+if ! [[ $CACHE_DIR ]]; then
+    # Source our config file if we have one
+    [[ -f $HOME/.build-crowbar.conf ]] && \
+        . "$HOME/.build-crowbar.conf"
+    # Look for a local one.
+    [[ -f build-crowbar.conf ]] && \
+        . "build-crowbar.conf"
 fi
-
-if ! which rpm rpm2cpio &>/dev/null; then
-    die "Cannot find rpm and rpm2cpio, we cannot proceed."
-fi
-
-if ! which ruby &>/dev/null; then
-    die "You must have Ruby installed to run this script.  We cannot proceed."
-fi
-
-
-# Source our config file if we have one
-[[ -f $HOME/.build-crowbar.conf ]] && \
-    . "$HOME/.build-crowbar.conf"
-
-# Look for a local one.
-[[ -f build-crowbar.conf ]] && \
-    . "build-crowbar.conf"
-
 # Always run in verbose mode for now.
 VERBOSE=true
 
@@ -86,6 +73,18 @@ unset CROWBAR_BUILD_PID
 # Source our common build functions
 . "$CROWBAR_DIR/build_lib.sh" || exit 1
 . "$CROWBAR_DIR/test_lib.sh" || exit 1
+
+if ! which cpio &>/dev/null; then
+    die "Cannot find cpio, we cannot proceed."
+fi
+
+if ! which rpm rpm2cpio &>/dev/null; then
+    die "Cannot find rpm and rpm2cpio, we cannot proceed."
+fi
+
+if ! which ruby &>/dev/null; then
+    die "You must have Ruby installed to run this script.  We cannot proceed."
+fi
 
 # Make sure that we actually know how to build the ISO we were asked to
 # build.  If we do not, print a helpful error message.
