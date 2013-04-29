@@ -46,7 +46,7 @@ script looks like this:
 2013-01-13 01:32:09 +0100: Nothing to commit
 ```
 
-This is script is run every 5 minutes by our public [Jenkins server]
+This is script is run every 15 minutes by our public [Jenkins server]
 (https://ci.opensuse.org/job/crowbar-travis_ci-trackupstream/).
 
 ### Debugging test failures
@@ -85,7 +85,7 @@ bundle exec rake db:drop railties:install:migrations db:migrate db:fixtures:dump
 Here's how the openSUSE Jenkins node was setup:
 
 1. Setup the system as described in the [openSUSE dev guide]
-   (../dev-vm-openSUSE.md).
+   (../dev-vm-SUSE.md).
 
 1. Create a new `crowbar` user account and switch to it.
    ```
