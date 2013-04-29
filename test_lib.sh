@@ -6,6 +6,8 @@
 # We only need to be sourced once.
 [[ $SMOKETEST_LIB_SOURCED = true ]] && exit 0
 
+[[ $ADMIN_MEM ]] || ADMIN_MEM=4G
+
 # Make sure we know where to find our test binaries
 [[ -d $CROWBAR_DIR/testing/cli ]] || mkdir -p "$CROWBAR_DIR/testing/cli"
 export PATH="$CROWBAR_DIR/testing/cli:$CROWBAR_DIR/test_framework:$CROWBAR_DIR:$CROWBAR_DIR/change-image/dell:$PATH:/sbin:/usr/sbin"
@@ -26,6 +28,7 @@ SMOKETEST_VLANS[600]="192.168.128.1/24"
 
 ADMIN_HOSTNAMES=("cr0wbar.pwns.joo"
     "vltima.ratio.regvm"
+    "altanoma.nihil.non"
     "admin.smoke.test"
     "bork.bork.bork")
 
@@ -33,7 +36,7 @@ ADMIN_HOSTNAME=${ADMIN_HOSTNAMES[$(($RANDOM % ${#ADMIN_HOSTNAMES[@]}))]}
 debug "Picked $ADMIN_HOSTNAME"
 export SMOKETEST_DOMAIN=${ADMIN_HOSTNAME#*.}
 
-for KVM in kvm qemu-kvm ''; do
+for KVM in kvm qemu-kvm qemu-system-x86_64 ''; do
     type $KVM &>/dev/null && break
 done
 
@@ -75,7 +78,7 @@ export CROWBAR_KEY="crowbar:crowbar"
 # Please keep it at 4 characters or less.
 SMOKETEST_BRIDGES=(crowbar-pub)
 
-NICS_PER_BRIDGE=2
+NICS_PER_BRIDGE=3
 
 # An array of physical interfaces and the bridges they should be bound to.
 # We need to use real physical interfaces becasue Crowbar assumes
@@ -215,19 +218,28 @@ smoketest_cleanup() {
     # We ignore errors in this function.
     set +e
     flock 75
-    [[ -d $smoketest_dir ]] || return 0
 
     killall check_ready
     [[ $develop_mode = true ]] && pause
     # Gather final logs if our admin node is up.
     smoketest_get_cluster_logs final
     # Make sure our virtual machines have been torn down.
-    for pidfile in "$smoketest_dir/"*.pid; do
-        local vmname=${pidfile##*/}
-        vmname=${vmname%.pid}
-        [[ $vmname = '*' ]] && continue
-        kill_vm "$vmname" || :
-    done
+    if [[ -d $smoketest_dir ]]; then
+        for pidfile in "$smoketest_dir/"*.pid; do
+            local vmname=${pidfile##*/}
+            vmname=${vmname%.pid}
+            [[ $vmname = '*' ]] && continue
+            kill_vm "$vmname" || :
+        done
+        target="${smoketest_dir##*/}-$(date '+%Y%m%d-%H%M%S')-${final_status}"
+        rm -f "$smoketest_dir/"*.disk || :
+        cp "$CROWBAR_DIR/smoketest.log" "$smoketest_dir"
+        (cd "$smoketest_dir/.."; \
+            tar czf "$currdir/$target.tar.gz" "${smoketest_dir##*/}")
+        echo "Logs are available at $currdir/$target.tar.gz."
+        rm -rf "$smoketest_dir"
+    fi
+
     # If there are any commands to run at smoketest_cleanup, run them now.
     for c in "${smoketest_cleanup_cmds[@]}"; do
         eval $c || :
@@ -254,13 +266,6 @@ smoketest_cleanup() {
     }
     [[ $final_status ]] || final_status=Passed
     echo "Deploy $final_status."
-    target="${smoketest_dir##*/}-$(date '+%Y%m%d-%H%M%S')-${final_status}"
-    rm -f "$smoketest_dir/"*.disk || :
-    cp "$CROWBAR_DIR/smoketest.log" "$smoketest_dir"
-    (cd "$smoketest_dir/.."; \
-        tar czf "$currdir/$target.tar.gz" "${smoketest_dir##*/}")
-    echo "Logs are available at $currdir/$target.tar.gz."
-    rm -rf "$smoketest_dir"
     [[ $final_status = Passed ]]
 } 75>"$CROWBAR_DIR/.smoketest_cleanup.lock"
 
@@ -422,7 +427,7 @@ wait_for_kvm() {
     shift
     local pidfile="$smoketest_dir/$vmname.pid"
     [[ -f $pidfile ]] || {
-        smoektest_update_status "$vmanme" "No pid file for KVM."
+        smoketest_update_status "$vmanme" "No pid file for KVM."
         return 1 # no pidfile? Bad Things happened.
     }
     local kvmpid=$(cat "$pidfile")
@@ -548,7 +553,8 @@ run_kvm() {
     local cpu_count=2 mem_size=2G
     if [[ $vmname = admin ]] ; then
       cpu_count=4
-      mem_size=4G
+      # set admin node memory in .build_crowbar.conf file as ADMIN_MEM=xG
+      mem_size=$ADMIN_MEM
     fi
     # Hack to pick the fastest disk caching mode.
     # We use unsafe caching if we can on the vms because we will just
@@ -637,7 +643,9 @@ run_kvm() {
             "$KVM" "${kvmargs[@]}" "$@"
         else
             # otherwise, launch ourselves under screen.
-            kvmargs+=( -curses )
+            # get port from name. For virt-123 should be 123
+            vncport="$(echo $vmname | sed 's|.*\([0-9]\+\)|\1|g')"
+            kvmargs+=( -vnc :$vncport )
             screen -S "$SMOKETEST_SCREEN" -X screen \
                 -t "$vm_gen" "$KVM" "${kvmargs[@]}" "$@"
             screen -S "$SMOKETEST_SCREEN" -p "$vm_gen" -X log on

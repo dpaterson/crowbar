@@ -1,16 +1,8 @@
 #!/bin/bash
 set -e
 die() {
-    if [[ $crowbar_up && $FQDN ]]; then
-        crowbar crowbar transition "$FQDN" problem
-    fi
     echo "$(date '+%F %T %z'): $@"
     exit 1
-}
-
-knife() {
-    command knife "$@" -u chef-webui -k /etc/chef/webui.pem || \
-        die "knife $* failed"
 }
 
 # Figure out where we are installing from.
@@ -140,7 +132,7 @@ EOF
     (   cd /tftpboot/gemsite/gems
         for gem in builder json net-http-digest_auth activesupport i18n \
             daemons bluepill xml-simple libxml-ruby wsman cstruct ; do
-            gem install --local --no-ri --no-rdoc $gem-*.gem
+            gem install --local --no-ri --no-rdoc $gem-*.gem || :
         done
         cd ..
         gem generate_index)
@@ -198,12 +190,10 @@ fi
 if [[ $OS = ubuntu ]]; then
     if ! dpkg-query -S /opt/dell/bin/crowbar_crowbar; then
         (   cd "$DVD_PATH/extra"
-            rabbit_chef_password=$( dd if=/dev/urandom count=1 bs=16 2>/dev/null | base64 | tr -d / )
             sed -i "s/__HOSTNAME__/$FQDN/g" ./debsel.conf
-            sed -i "/^chef-solr/ s/password\$/${rabbit_chef_password}/" ./debsel.conf
             /usr/bin/debconf-set-selections ./debsel.conf)
         apt-get update
-        apt-get -y install 'crowbar-barclamp-*'
+        apt-get -y install libssl-dev 'crowbar-barclamp-*'
     fi
 elif [[ $OS = redhat ]]; then
     yum -y makecache
@@ -269,31 +259,46 @@ mkdir -p /opt/dell/doc
 [[ -d $DVD_PATH/doc/framework ]] && cp -a $DVD_PATH/doc/framework /opt/dell/doc
 
 # Run the rest of the barclamp install actions.
-(cd /opt/dell/barclamps && /opt/dell/bin/barclamp_install.rb --deploy *)
+(export DEBUG=true; cd /opt/dell/barclamps && /opt/dell/bin/barclamp_install.rb --deploy *)
 
 # Get out of bootstrap mode
 rm -f /tmp/.crowbar_in_bootstrap
 service crowbar restart
 
+# By now, we have a machine key.  Load it.
+export CROWBAR_KEY=$(cat /etc/crowbar.install.key)
+
 ###
 # This should vanish once we have a real bootstrapping story.
 ###
+
+# Wait for puma to come back to life.
+sleep 15
+
+# Create a stupid default admin network
+curl --digest -u $(cat /etc/crowbar.install.key) \
+    -X POST http://localhost:3000/network/v2/networks \
+    -d "name=admin" \
+    -d "deployment=system" \
+    -d "conduit=1g0" \
+    -d 'ranges=[ { "name": "admin", "first": "192.168.124.10/24", "last": "192.168.124.11/24"},{"name": "host", "first": "192.168.124.81/24", "last": "192.168.124.254/24"},{"name": "dhcp", "first": "192.168.124.21/24", "last": "192.168.124.80/24"}]'
 
 # Create the admin node entry.
 curl --digest -u $(cat /etc/crowbar.install.key) \
     -X POST http://localhost:3000/api/v2/nodes -d "name=$FQDN" -d 'admin=true'
 
-# Add the required roles for the admin node to act like a provisioner.
-HOSTNAME=$(hostname --fqdn)
-roles=(deployer-client network dns-server dns-client 
-    ntp-server logging-server provisioner-server)
-for role in "${roles[@]}"; do 
-    knife node run_list add $HOSTNAME role[$role]; 
+tries=3
+converged=false
+while ((tries > 0)); do
+    echo "Converging all noderoles on $FQDN ($tries tries left):"
+    if /opt/dell/bin/crowbar converge; then
+        converged=true
+        break
+    fi
+    tries=$((tries - 1))
 done
+[[ $converged = false ]] && die "Could not converge $FQDN!"
 
-chef-client || die "Install failed."
-
-# Not actually properly deployed, but pretend we are.
 echo "Admin node deployed."
 
 touch /opt/dell/crowbar_framework/.crowbar-installed-ok
